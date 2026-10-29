@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(SpotifyRamFixV08 LANGUAGES CXX)
+project(SpotifyRamFixV09 LANGUAGES CXX)
 add_library(version SHARED version_proxy.cpp version.def)
 set_target_properties(version PROPERTIES OUTPUT_NAME version CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 target_link_libraries(version PRIVATE Psapi)
