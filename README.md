@@ -1,28 +1,24 @@
-# Spotify RAM Fix v0.4 — Experimental DLL proxy
+# Spotify RAM Fix v0.5 — diagnostic build
 
-**Unverified Windows build / experimental.** Source adapts the previously tested `version.dll` probe and v0.1 working-set trimmer. The DLL forwards the 16 Version APIs from the probe, so this is not a drop-in replacement for all possible exports of Windows `version.dll` on every build. Spotify updates may break proxy loading.
+This is an **untested** diagnostic update to v0.4. It preserves the original cross-process trimming and mutex design so we can pinpoint why it isn't working. The DLL is a `version.dll` proxy; **do not put it in System32**.
 
-## Setup
+## Build
+Upload all files to the root of your GitHub repository, preserving `.github/workflows/build.yml`. Run **Actions > Build Spotify RAM Fix proxy DLL > Run workflow**, then download the `SpotifyRamFix-v0.5-x64` artifact.
 
-1. Remove the old **probe** `version.dll` from `%APPDATA%\Spotify` (back it up if desired). Never replace any DLL in `C:\Windows\System32`.
-2. Upload contents of this folder to your GitHub repository root (including `.github/workflows/build.yml`).
-3. Run the GitHub Actions workflow **Build Spotify RAM Fix proxy DLL**, download the artifact and extract it.
-4. Exit Spotify completely. Put the new `version.dll` and `settings.ini` beside `%APPDATA%\Spotify\Spotify.exe`, only if there is no legitimate existing `version.dll` there.
-5. Start Spotify, play music, and inspect `%LOCALAPPDATA%\SpotifyRamFix-memory-log.csv` with Notepad or Excel. Watch `trim_succeeded` and `win32_error` per PID.
-6. To uninstall: completely close Spotify, delete **only the `version.dll` and `settings.ini` placed by this test**, then reopen Spotify.
+## Install
+1. Exit Spotify completely, including its tray icon.
+2. Remove the old test `version.dll` from `%APPDATA%\Spotify`. Do not replace an unrelated pre-existing DLL.
+3. Put the new `version.dll` and `settings.ini` next to `Spotify.exe` in `%APPDATA%\Spotify`.
+4. Launch Spotify and play music for at least 45 seconds.
+5. Check `%LOCALAPPDATA%\Low\SpotifyRamFix-diagnostic.log` and `%LOCALAPPDATA%\Low\SpotifyRamFix-memory-log.csv`. If absent, also check `%LOCALAPPDATA%` for those filenames.
 
-## What it does
+## Interpreting results
+- `worker_started`: the DLL spawned its background worker.
+- `mutex_acquired`: this process owns the single optimizer loop.
+- `mutex_already_owned`: another Spotify process owns it; normal for other processes.
+- `trim_cycle_begin` and `trim_cycle_logged`: optimization cycle ran and attempted CSV output.
+- In CSV, `win32_error=5` suggests access denied while trimming other Spotify processes.
 
-- Uses a **session-local mutex** so ordinarily just one injected Spotify subprocess runs the worker.
-- Every 30 seconds (configurable between 5 sec and 1 hour) enumerates `Spotify.exe` processes and calls `EmptyWorkingSet` on each accessible process.
-- Logs the before/after resident working set and any Windows errors. Reloads settings each interval.
-- `EnableTrim=0` for monitoring only; `LogCsv=0` to stop logging.
-- No MMCSS hooks, thread scheduling adjustments, input hooks, external injector, or Spotify executable modification.
+If **neither log exists**, the worker may be unable to write even to LocalLow or may not have started. Check Procmon for the log filename and its Result, or use DebugView for `SpotifyRamFix: CreateThread failed`.
 
-## Critical limitations
-
-- Your probe loaded inside a **low-integrity storage utility subprocess**. Windows may **deny** `OpenProcess` access to medium-integrity Spotify processes (`win32_error=5`), which means the DLL will **not** match the standalone EXE's 7/7 trim success. Examine CSV results first.
-- A named mutex avoids duplicate work for processes that can access the mutex, but processes in different security contexts could still get access denied and run no worker; the log reveals this.
-- Trimming affects Windows' **resident working set**, not the amount of memory Spotify allocates. Pages may be faulted back, with possible UI/audio latency.
-- This is only 16 common Version API exports; if Spotify requires other exports, launching could fail. Test and roll back before everyday use.
-- This source has not been compiled or executed on Windows in this environment.
+Remove only our `version.dll` and `settings.ini` if Spotify fails to open. Working-set trimming can reduce Task Manager's memory figure without reducing total committed memory and may increase page faults.

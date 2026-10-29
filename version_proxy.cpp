@@ -6,6 +6,7 @@
 #include <cwchar>
 #include <string>
 #include <vector>
+#include <cstdio>
 #pragma comment(lib, "Psapi.lib")
 
 // Every exported Version API is forwarded to the genuine Windows system DLL.
@@ -33,11 +34,35 @@ std::wstring appPath(const wchar_t* filename) {
     const auto slash = result.find_last_of(L"\\/");
     return (slash == std::wstring::npos ? std::wstring{} : result.substr(0, slash + 1)) + filename;
 }
-std::wstring logPath() {
+// Spotify utility processes can be Low integrity. %LOCALAPPDATA%\Low is
+// normally low-integrity writable; log there first, then try LOCALAPPDATA.
+std::wstring logDirectory() {
     wchar_t base[MAX_PATH]{};
     DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
     if (!n || n >= MAX_PATH) return L"";
-    return std::wstring(base) + L"\\SpotifyRamFix-memory-log.csv";
+    std::wstring low = std::wstring(base) + L"\\Low";
+    if (GetFileAttributesW(low.c_str()) != INVALID_FILE_ATTRIBUTES) return low;
+    return std::wstring(base);
+}
+std::wstring logPath(const wchar_t* suffix) {
+    std::wstring base = logDirectory();
+    return base.empty() ? L"" : base + L"\\SpotifyRamFix-" + suffix;
+}
+void appendText(const std::wstring& path, const std::string& msg) {
+    if (path.empty()) return;
+    HANDLE f = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD n = 0;
+    WriteFile(f, msg.data(), static_cast<DWORD>(msg.size()), &n, nullptr);
+    CloseHandle(f);
+}
+std::string now();
+void diagnostic(const char* message, DWORD error=0) {
+    appendText(logPath(L"diagnostic.log"), now() + " pid=" +
+        std::to_string(GetCurrentProcessId()) + " " + message +
+        " error=" + std::to_string(error) + "\r\n");
 }
 Settings loadSettings(const std::wstring& config) {
     Settings s;
@@ -68,7 +93,7 @@ SIZE_T workingSet(HANDLE process) {
     return GetProcessMemoryInfo(process, &pmc, sizeof(pmc)) ? pmc.WorkingSetSize : 0;
 }
 void writeRows(const std::string& rows) {
-    const auto path = logPath();
+    const auto path = logPath(L"memory-log.csv");
     if (path.empty()) return;
     HANDLE f = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -93,18 +118,23 @@ std::string now() {
 }
 
 DWORD WINAPI TrimWorker(void*) {
+    diagnostic("worker_started");
     // Only one loaded instance may enumerate/trim the Spotify process tree per session.
     HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\SpotifyRamFix_v04_TrimWorker");
-    if (!mutex) return 0;
+    if (!mutex) { diagnostic("mutex_create_failed", GetLastError()); return 0; }
     const DWORD acquired = WaitForSingleObject(mutex, 0);
     if (acquired != WAIT_OBJECT_0 && acquired != WAIT_ABANDONED) {
+        diagnostic(acquired == WAIT_TIMEOUT ? "mutex_already_owned" : "mutex_wait_failed",
+                   acquired == WAIT_FAILED ? GetLastError() : acquired);
         CloseHandle(mutex);
         return 0;
     }
+    diagnostic("mutex_acquired");
     const auto config = appPath(L"settings.ini");
     while (true) {
         const Settings opts = loadSettings(config);
         const auto pids = spotifyPids();
+        diagnostic("trim_cycle_begin");
         std::string rows;
         if (opts.logCsv) {
             for (DWORD pid : pids) {
@@ -132,6 +162,7 @@ DWORD WINAPI TrimWorker(void*) {
             }
             if (pids.empty()) rows = now() + ",0,0,0,0,0," + std::to_string(GetCurrentProcessId()) + "\r\n";
             writeRows(rows);
+            diagnostic("trim_cycle_logged");
         } else if (opts.enabled) {
             for (DWORD pid : pids) {
                 HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, FALSE, pid);
@@ -148,7 +179,9 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(instance);
         HANDLE worker = CreateThread(nullptr, 0, TrimWorker, nullptr, 0, nullptr);
+        // Avoid file I/O under the loader lock. The worker logs initialization.
         if (worker) CloseHandle(worker);
+        else OutputDebugStringW(L"SpotifyRamFix: CreateThread failed in DllMain\n");
     }
     return TRUE;
 }
