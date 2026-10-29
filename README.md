@@ -1,33 +1,27 @@
-# Spotify RAM Fix v0.6 (experimental)
+# Spotify RAM Fix v0.7 — minimal DLL initialization probe
 
-A `version.dll` proxy for the **website-installed Windows x64 Spotify client**. This is a test build, not a verified fix.
+**Test-only. Does not reduce RAM.** No workers, mutexes, trimming, filesystem writes or user configuration.
 
-## What changed
+## What it tests
 
-- Removed the cross-process mutex and attempts to open other Spotify processes.
-- Each Spotify subprocess that loads this DLL trims **only its own** working set.
-- Uses `%USERPROFILE%\AppData\LocalLow\SpotifyRamFix\` for diagnostics and CSV output (the prior version mistakenly used `Local\Low`).
-- Logs worker startup, memory samples, and trim failures. If file logging fails, emits `OutputDebugString` messages.
-- Keeps version API forwarding, with no MMCSS, thread priority, or raw input hooks.
+- `DllMain(DLL_PROCESS_ATTACH)` emits `SpotifyRamFix v0.7: DLL_PROCESS_ATTACH` through `OutputDebugStringW`.
+- If Spotify invokes a Version API export from the proxy, the proxy emits a second `SpotifyRamFix v0.7: version API export called` debug message, and forwards that call to Windows' genuine System32 `version.dll`.
+- Loading the DLL in Procmon alone proves mapping, not that the debug listener captured the message.
 
-## Build
+## GitHub Actions build
 
-Upload the files to your repository root and keep `.github/workflows/build.yml` in the correct location. Use **Actions → Build Spotify RAM Fix DLL v0.6 → Run workflow**. Download `SpotifyRamFix-v0.6-x64`.
+Upload `version_proxy.cpp`, `version.def`, `CMakeLists.txt`, and `.github/workflows/build.yml` to the repository root (creating `.github/workflows/build.yml` through the GitHub web editor if hidden locally). In Actions, run **Build Spotify DLL Probe v0.7** and download the artifact.
 
-## Test
+## Test safely
 
-1. Fully exit Spotify (including tray and background processes).
-2. In `%APPDATA%\Spotify`, **back up any existing third-party `version.dll`** and remove the old test DLL. Never touch `C:\Windows\System32\version.dll`.
-3. Copy the new `version.dll` and `settings.ini` beside `Spotify.exe`.
-4. Launch Spotify and play music for at least a minute. Stop using any standalone Spotify RAM trimmer while testing.
-5. Read `%USERPROFILE%\AppData\LocalLow\SpotifyRamFix\diagnostic.log` and `memory-log.csv`.
-6. Check Task Manager. Some Spotify processes may load the system version DLL instead; this implementation **will not trim those**.
-7. If startup or playback breaks, close Spotify and remove the custom `version.dll`.
+1. Fully exit Spotify and any old memory optimizer EXE.
+2. Back up/remove the older custom `%APPDATA%\Spotify\version.dll`. **Never replace System32's version.dll.**
+3. Put the new probe `version.dll` next to `%APPDATA%\Spotify\Spotify.exe`.
+4. Start **DebugView as Administrator**; enable Capture > Capture Win32; clear the view and relaunch Spotify.
+5. Search for `SpotifyRamFix v0.7` in DebugView; also use Procmon to verify `Load Image` of the exact AppData DLL path.
+6. For comparison, look for an application-local Load Image event in **Procmon** if DebugView captures nothing. Sandboxed Spotify subprocesses may not send visible debug output.
+7. After testing, exit Spotify and remove this **test** DLL. If Spotify fails to launch, immediately remove the probe DLL.
 
-`memory-log.csv` columns: timestamp, pid, before_bytes, after_bytes, trim_succeeded, win32_error. Trimming a working set lowers reported resident memory but does **not** fix leaks or reduce underlying committed memory. Frequent trimming can increase page faults and playback glitches.
+This probe deliberately does not create log files, because prior versions had silent file-write failures and this is a minimal loader/init test. If debug output remains absent despite verified loading, use an external debugger/ETW instead of assuming initialization did not run.
 
-## Limitations
-
-- Experimental and untested on Windows. GitHub build needs to compile successfully.
-- This DLL starts a worker via `CreateThread` during `DllMain`, but does not wait or perform file I/O there; the worker performs work after loader initialization. Fully deferred initialization would require a guaranteed post-load callback from the host, which we have not established.
-- Exact version API forwarding compatibility is not guaranteed across all versions of Spotify.
+**Note:** The DLL export-forwarding implementation preserves the v0.6 signatures but has not been verified in a Windows build or tested in Spotify. Treat this as experimental.
