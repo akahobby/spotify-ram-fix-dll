@@ -1,31 +1,39 @@
 name: Build Spotify RAM Fix v1.0
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Configure
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure x64
         run: cmake -S . -B build -A x64
-      - name: Build
+
+      - name: Build Release
         run: cmake --build build --config Release
-      - name: Check exports
+
+      - name: Verify output
         shell: pwsh
         run: |
-          $dumpbin = (Get-ChildItem 'C:\Program Files\Microsoft Visual Studio2\Enterprise\VC\Tools\MSVC\*in\Hostx64d\dumpbin.exe' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          if ($dumpbin) { & $dumpbin /exports build/Release/version.dll }
-          if (!(Test-Path build/Release/version.dll)) { throw 'DLL not built' }
-      - name: Prepare release bundle
+          if (-not (Test-Path 'build/Release/version.dll')) {
+            throw 'Expected DLL was not built.'
+          }
+
+      - name: Package release
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path release -Force | Out-Null
-          Copy-Item build/Release/version.dll release/version.dll
-          Copy-Item settings.ini, install.ps1, uninstall.ps1, README.md, LICENSE release/
-          Compress-Archive -Path release/* -DestinationPath SpotifyRamFix-v1.0-Windows-x64.zip -Force
-      - name: Upload Windows release ZIP
+          Copy-Item 'build/Release/version.dll' 'release/version.dll'
+          Copy-Item 'settings.ini', 'install.ps1', 'uninstall.ps1', 'README.md', 'LICENSE' -Destination release
+          Compress-Archive -Path 'release/*' -DestinationPath 'SpotifyRamFix-v1.0-Windows-x64.zip' -Force
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: SpotifyRamFix-v1.0-Windows-x64
