@@ -1,6 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <winver.h>
 #include <strsafe.h>
 
 static HMODULE GetSystemVersion() {
@@ -45,8 +44,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
 }
 
 #define PROXY(ret, name, args, callargs, fallback) \
-extern "C" __declspec(dllexport) ret WINAPI name args { \
-    using Fn = decltype(&name); \
+extern "C" ret WINAPI Proxy_##name args { \
+    using Fn = decltype(&Proxy_##name); \
     Fn fn = GetVersionProc<Fn>(#name); \
     if (!fn) { SetLastError(ERROR_PROC_NOT_FOUND); return fallback; } \
     return fn callargs; \

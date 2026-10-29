@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(SpotifyVersionProbe LANGUAGES CXX)
-add_library(version SHARED version_probe.cpp)
+add_library(version SHARED version_probe.cpp version.def)
 set_target_properties(version PROPERTIES OUTPUT_NAME "version" CXX_STANDARD 17)
 target_link_libraries(version PRIVATE kernel32)
 if(MSVC)
