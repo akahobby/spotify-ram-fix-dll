@@ -154,7 +154,7 @@ DWORD WINAPI Worker(LPVOID) {
     DWORD selfExeLen = GetModuleFileNameW(nullptr, selfExe,
         static_cast<DWORD>(sizeof(selfExe) / sizeof(selfExe[0])));
     const bool canScan = selfExeLen > 0 && selfExeLen < sizeof(selfExe) / sizeof(selfExe[0]) &&
-        _wcsicmp(wcsrchr(selfExe, L'\') ? wcsrchr(selfExe, L'\') + 1 : selfExe, L"Spotify.exe") == 0;
+        _wcsicmp(wcsrchr(selfExe, L'\\') ? wcsrchr(selfExe, L'\\') + 1 : selfExe, L"Spotify.exe") == 0;
     Debug(crossEnabled && canScan ? L"trim_enabled_cross_process" : L"trim_enabled_self_only");
     // Give Spotify's subprocess a chance to finish startup before the first trim.
     Sleep(5000);

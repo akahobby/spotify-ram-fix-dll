@@ -25,3 +25,7 @@ Upload `version_proxy.cpp`, `version.def`, `CMakeLists.txt`, `settings.ini`, and
 - Working-set trimming reduces resident memory reported by Task Manager, **not private committed allocation**. Memory may be faulted back in, and excessive trimming can hurt performance.
 - No MMCSS hooks, thread-priority changes, raw-input hooks, process patching, elevated privileges or automatic injection.
 - The default app-local DLL proxy can break with Spotify updates; keep a rollback copy.
+
+
+## v0.9.1 build fix
+Corrected malformed C++ wide-character backslash literals in executable filename detection (`L'\\'`). No intended changes to memory trimming behavior.
