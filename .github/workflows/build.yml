@@ -1,8 +1,9 @@
-name: Build Spotify RAM Fix DLL v0.6
+name: Build Spotify DLL Probe v0.7
 on:
   workflow_dispatch:
   push:
     branches: [main]
+
 jobs:
   build:
     runs-on: windows-latest
@@ -12,10 +13,8 @@ jobs:
         run: cmake -S . -B build -A x64
       - name: Build
         run: cmake --build build --config Release
-      - name: Upload DLL and configuration
+      - name: Upload probe
         uses: actions/upload-artifact@v4
         with:
-          name: SpotifyRamFix-v0.6-x64
-          path: |
-            build/Release/version.dll
-            settings.ini
+          name: SpotifyRamFix-v0.7-probe-x64
+          path: build/Release/version.dll
