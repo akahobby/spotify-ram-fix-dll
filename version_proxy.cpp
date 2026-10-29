@@ -20,16 +20,23 @@ template<typename Fn> Fn GetVersionProc(const char* name) {
 
 namespace {
 HMODULE g_self = nullptr;
+bool g_debugLogging = true;
+SIZE_T g_minWorkingSetBytes = 0;
+
+bool ShouldTrim(SIZE_T working) {
+    return working >= g_minWorkingSetBytes;
+}
+
 
 void Debug(const wchar_t* event, SIZE_T before = 0, SIZE_T after = 0,
            DWORD error = 0, BOOL ok = FALSE, SIZE_T privateBytes = 0) {
     wchar_t msg[512]{};
-    swprintf_s(msg, L"SpotifyRamFix v0.9: pid=%lu %s ws_before=%llu ws_after=%llu private=%llu success=%d error=%lu\n",
+    swprintf_s(msg, L"SpotifyRamFix v0.9.2: pid=%lu %s ws_before=%llu ws_after=%llu private=%llu success=%d error=%lu\n",
         GetCurrentProcessId(), event,
         static_cast<unsigned long long>(before),
         static_cast<unsigned long long>(after),
         static_cast<unsigned long long>(privateBytes), ok ? 1 : 0, error);
-    OutputDebugStringW(msg);
+    if (g_debugLogging) OutputDebugStringW(msg);
 }
 
 bool SampleMemory(SIZE_T& working, SIZE_T& privateBytes) {
@@ -49,12 +56,12 @@ bool SampleMemory(SIZE_T& working, SIZE_T& privateBytes) {
 void DebugTarget(DWORD targetPid, const wchar_t* state, SIZE_T before, SIZE_T after,
                  SIZE_T privateBytes, DWORD error) {
     wchar_t msg[640]{};
-    swprintf_s(msg, L"SpotifyRamFix v0.9: worker=%lu target=%lu %s ws_before=%llu ws_after=%llu private=%llu error=%lu\n",
+    swprintf_s(msg, L"SpotifyRamFix v0.9.2: worker=%lu target=%lu %s ws_before=%llu ws_after=%llu private=%llu error=%lu\n",
         GetCurrentProcessId(), targetPid, state,
         static_cast<unsigned long long>(before),
         static_cast<unsigned long long>(after),
         static_cast<unsigned long long>(privateBytes), error);
-    OutputDebugStringW(msg);
+    if (g_debugLogging) OutputDebugStringW(msg);
 }
 
 bool SampleHandle(HANDLE process, SIZE_T& working, SIZE_T& privateBytes) {
@@ -109,6 +116,10 @@ void TrimSiblingProcesses(const std::wstring& selfExe) {
                 CloseHandle(process);
                 continue;
             }
+            if (!ShouldTrim(before)) {
+                CloseHandle(process);
+                continue;
+            }
             SetLastError(ERROR_SUCCESS);
             BOOL trimmed = EmptyWorkingSet(process);
             DWORD error = trimmed ? ERROR_SUCCESS : GetLastError();
@@ -127,6 +138,7 @@ void TrimSiblingProcesses(const std::wstring& selfExe) {
 }
 
 DWORD WINAPI Worker(LPVOID) {
+    // Startup is logged in DllMain, before optional debug output is disabled.
     Debug(L"worker_started");
     wchar_t modulePath[MAX_PATH]{};
     DWORD count = GetModuleFileNameW(g_self, modulePath, MAX_PATH);
@@ -142,6 +154,14 @@ DWORD WINAPI Worker(LPVOID) {
     }
     config.resize(slash + 1);
     config += L"settings.ini";
+    g_debugLogging = GetPrivateProfileIntW(L"Settings", L"EnableDebugLogging", 0, config.c_str()) != 0;
+    int threshold = GetPrivateProfileIntW(L"Settings", L"MinWorkingSetMB", 0, config.c_str());
+    if (threshold < 0) threshold = 0;
+    if (threshold > 4096) threshold = 4096;
+    g_minWorkingSetBytes = static_cast<SIZE_T>(threshold) * 1024 * 1024;
+    int startupDelay = GetPrivateProfileIntW(L"Settings", L"StartupDelayMs", 5000, config.c_str());
+    if (startupDelay < 0) startupDelay = 0;
+    if (startupDelay > 120000) startupDelay = 120000;
     const bool enabled = GetPrivateProfileIntW(L"Settings", L"EnableTrim", 1, config.c_str()) != 0;
     int rawInterval = GetPrivateProfileIntW(L"Settings", L"TrimIntervalMs", 30000, config.c_str());
     DWORD interval = static_cast<DWORD>(rawInterval < 5000 ? 5000 : (rawInterval > 3600000 ? 3600000 : rawInterval));
@@ -157,12 +177,15 @@ DWORD WINAPI Worker(LPVOID) {
         _wcsicmp(wcsrchr(selfExe, L'\\') ? wcsrchr(selfExe, L'\\') + 1 : selfExe, L"Spotify.exe") == 0;
     Debug(crossEnabled && canScan ? L"trim_enabled_cross_process" : L"trim_enabled_self_only");
     // Give Spotify's subprocess a chance to finish startup before the first trim.
-    Sleep(5000);
+    Sleep(static_cast<DWORD>(startupDelay));
     for (;;) {
         SIZE_T before = 0, after = 0, privateBefore = 0, privateAfter = 0;
         if (!SampleMemory(before, privateBefore)) {
             Debug(L"sample_before_failed", 0, 0, GetLastError());
         } else {
+            if (!ShouldTrim(before)) {
+                // Avoid pointless paging when already under the configured threshold.
+            } else {
             SetLastError(ERROR_SUCCESS);
             BOOL ok = EmptyWorkingSet(GetCurrentProcess());
             DWORD err = ok ? ERROR_SUCCESS : GetLastError();
@@ -170,6 +193,7 @@ DWORD WINAPI Worker(LPVOID) {
                 Debug(L"sample_after_failed", before, 0, GetLastError(), ok, privateBefore);
             } else {
                 Debug(L"trim", before, after, err, ok, privateAfter);
+            }
             }
         }
         if (crossEnabled && canScan) TrimSiblingProcesses(selfExe);
@@ -182,12 +206,12 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_self = instance;
         DisableThreadLibraryCalls(instance);
-        OutputDebugStringW(L"SpotifyRamFix v0.9: DLL_PROCESS_ATTACH\n");
+        OutputDebugStringW(L"SpotifyRamFix v0.9.2: DLL_PROCESS_ATTACH\n");
         // Minimal setup here. Worker does all config, debugging and trimming
         // after the loader lock is released; we never wait inside DllMain.
         HANDLE thread = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
         if (thread) CloseHandle(thread);
-        else OutputDebugStringW(L"SpotifyRamFix v0.9: CreateThread failed\n");
+        else OutputDebugStringW(L"SpotifyRamFix v0.9.2: CreateThread failed\n");
     }
     return TRUE;
 }
@@ -195,7 +219,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
 #define PROXY(ret, name, args, callargs, fallback) \
 extern "C" ret WINAPI Proxy_##name args { \
     using Fn = decltype(&Proxy_##name); \
-    OutputDebugStringW(L"SpotifyRamFix v0.9: version API export called\n"); \
+    OutputDebugStringW(L"SpotifyRamFix v0.9.2: version API export called\n"); \
     Fn fn = GetVersionProc<Fn>(#name); \
     if (!fn) { SetLastError(ERROR_PROC_NOT_FOUND); return fallback; } \
     return fn callargs; \
