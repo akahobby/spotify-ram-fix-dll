@@ -7,7 +7,7 @@
 #include <string>
 #include <cstdio>
 
-// Minimal probe: no background thread, memory trimming, mutex, or file I/O.
+// Forward Win32 Version APIs to the genuine system DLL.
 // The genuine version.dll is resolved by SYSTEM32-only search when an export is called.
 static HMODULE GetSystemVersion() {
     static HMODULE module = LoadLibraryExW(L"version.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -31,7 +31,7 @@ bool ShouldTrim(SIZE_T working) {
 void Debug(const wchar_t* event, SIZE_T before = 0, SIZE_T after = 0,
            DWORD error = 0, BOOL ok = FALSE, SIZE_T privateBytes = 0) {
     wchar_t msg[512]{};
-    swprintf_s(msg, L"SpotifyRamFix v0.9.3: pid=%lu %s ws_before=%llu ws_after=%llu private=%llu success=%d error=%lu\n",
+    swprintf_s(msg, L"SpotifyRamFix v1.0: pid=%lu %s ws_before=%llu ws_after=%llu private=%llu success=%d error=%lu\n",
         GetCurrentProcessId(), event,
         static_cast<unsigned long long>(before),
         static_cast<unsigned long long>(after),
@@ -56,7 +56,7 @@ bool SampleMemory(SIZE_T& working, SIZE_T& privateBytes) {
 void DebugTarget(DWORD targetPid, const wchar_t* state, SIZE_T before, SIZE_T after,
                  SIZE_T privateBytes, DWORD error) {
     wchar_t msg[640]{};
-    swprintf_s(msg, L"SpotifyRamFix v0.9.3: worker=%lu target=%lu %s ws_before=%llu ws_after=%llu private=%llu error=%lu\n",
+    swprintf_s(msg, L"SpotifyRamFix v1.0: worker=%lu target=%lu %s ws_before=%llu ws_after=%llu private=%llu error=%lu\n",
         GetCurrentProcessId(), targetPid, state,
         static_cast<unsigned long long>(before),
         static_cast<unsigned long long>(after),
@@ -183,7 +183,7 @@ DWORD WINAPI Worker(LPVOID) {
     HANDLE coordinatorMutex = nullptr;
     bool coordinator = false;
     if (crossEnabled && canScan) {
-        coordinatorMutex = CreateMutexW(nullptr, FALSE, L"Local\\SpotifyRamFix_v093_CrossProcessCoordinator");
+        coordinatorMutex = CreateMutexW(nullptr, FALSE, L"Local\\SpotifyRamFix_v100_CrossProcessCoordinator");
         if (!coordinatorMutex) {
             Debug(L"coordinator_mutex_create_failed", 0, 0, GetLastError());
         }
@@ -235,12 +235,12 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_self = instance;
         DisableThreadLibraryCalls(instance);
-        OutputDebugStringW(L"SpotifyRamFix v0.9.3: DLL_PROCESS_ATTACH\n");
+        OutputDebugStringW(L"SpotifyRamFix v1.0: DLL_PROCESS_ATTACH\n");
         // Minimal setup here. Worker does all config, debugging and trimming
         // after the loader lock is released; we never wait inside DllMain.
         HANDLE thread = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
         if (thread) CloseHandle(thread);
-        else OutputDebugStringW(L"SpotifyRamFix v0.9.3: CreateThread failed\n");
+        else OutputDebugStringW(L"SpotifyRamFix v1.0: CreateThread failed\n");
     }
     return TRUE;
 }
@@ -248,7 +248,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
 #define PROXY(ret, name, args, callargs, fallback) \
 extern "C" ret WINAPI Proxy_##name args { \
     using Fn = decltype(&Proxy_##name); \
-    OutputDebugStringW(L"SpotifyRamFix v0.9.3: version API export called\n"); \
+    OutputDebugStringW(L"SpotifyRamFix v1.0: version API export called\n"); \
     Fn fn = GetVersionProc<Fn>(#name); \
     if (!fn) { SetLastError(ERROR_PROC_NOT_FOUND); return fallback; } \
     return fn callargs; \

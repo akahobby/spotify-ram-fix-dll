@@ -1,34 +1,56 @@
-# Spotify RAM Fix v0.9.3 — coordinator update
+# Spotify RAM Fix v1.0
 
-Experimental C++ `version.dll` proxy for the website-installed Spotify desktop app. This update is based on the user-tested v0.9.2 code.
+Native Windows x64 `version.dll` proxy for the **Spotify desktop installer (website version)**. Builds on the user-tested v0.9.3 coordinator release. This is an **experimental release candidate**, not an independently validated stable build.
 
-## Changes
+## What it does
 
-- Elects **one cross-process coordinator per Windows logon session** via a named mutex, held for the worker's lifetime.
-- Other proxy-loaded Spotify processes continue trimming **their own** working sets on the configured interval, without each enumerating all sibling PIDs.
-- If the coordinator process terminates, another instance can take over at its next interval.
-- Existing configuration, Version API forwarding, and no-MMCSS/no-thread-hook behavior are retained.
-- Default detailed debugging remains off. Enable `EnableDebugLogging=1` when diagnosing `coordinator_elected`, `trim_success`, and access-denied conditions.
+- For Spotify subprocesses that load the application-local `version.dll`, starts a periodic working-set trim using Windows `EmptyWorkingSet`.
+- Optional single cross-process coordinator *attempts* to trim sibling `Spotify.exe` processes with the same executable path. Sandbox permissions can block this.
+- Preserves standard Version API exports by forwarding them to the system `version.dll`.
+- Leaves MMCSS, audio-thread priorities and raw input unchanged.
 
-## Important limitations
-
-- The coordinator is selected from the Spotify subprocesses that actually load the application-local proxy DLL. It may have insufficient rights to trim other Spotify processes. **This is not an all-seven-process guarantee.**
-- Self-trimming and coordinator trimming can occasionally overlap for a target process; this update prevents *multiple full scans*, not every duplicate trim across process boundaries.
-- `EmptyWorkingSet` reduces resident working-set pages, not private committed allocations. Low Task Manager memory is not proof of a repaired memory leak.
-- Native DLL proxy loading is experimental and may break when Spotify changes. Back up your known-working v0.9.2 binary and never overwrite `C:\Windows\System32\version.dll`.
+**Important:** Trimming removes resident pages from a process's working set. It does **not** necessarily free committed private memory or fix a leak. A low Task Manager figure may recover quickly and page faults can increase. Some Spotify processes use the system DLL, so not all seven will necessarily be trimmed.
 
 ## Build
 
-Commit the project files to the root of the GitHub repository and run **Build Spotify RAM Fix DLL v0.9.3** in GitHub Actions. The uploaded artifact includes `build/Release/version.dll` and `settings.ini`.
+On GitHub: Actions > **Build Spotify RAM Fix v1.0** > Run workflow. Download and extract the `SpotifyRamFix-v1.0-Windows-x64` artifact, then extract the ZIP inside. This repository ZIP is **source**, not a prebuilt DLL.
 
-## Install / rollback
+Alternatively, on Windows with Visual Studio C++ and CMake:
 
-1. Exit Spotify completely.
-2. Back up `%APPDATA%\Spotify\version.dll` and `settings.ini` if present.
-3. Copy the newly compiled `version.dll` and `settings.ini` beside the website-install Spotify.exe at `%APPDATA%\Spotify`.
-4. Launch Spotify; for diagnosis set `EnableDebugLogging=1` and watch DebugView with Capture Win32 enabled.
-5. If it crashes, fails to launch, or behaves poorly, exit Spotify, remove this custom DLL, or restore v0.9.2.
+```powershell
+cmake -S . -B build -A x64
+cmake --build build --config Release
+```
 
-## Runtime defaults
+Copy `build/Release/version.dll` beside `settings.ini`, `install.ps1` and `uninstall.ps1` before installing.
 
-30-second interval, 5-second first-trim delay, threshold disabled, and cross-process attempts enabled. MMCSS and thread-priority hooks are not present.
+## Install / update
+
+1. Fully exit Spotify, including the tray icon. Stop any older standalone RAM optimizer to avoid confounding results.
+2. Back up your current known-good v0.9.3 `version.dll` and settings separately.
+3. From the **compiled release directory**, run `install.ps1` in PowerShell (e.g. `powershell -ExecutionPolicy Bypass -File .\install.ps1`). Only run scripts you've reviewed and trust.
+4. The script checks for the **website** Spotify installation at `%APPDATA%\Spotify`, backs up any existing `version.dll` and `settings.ini` before installing, and writes an install record.
+5. Start Spotify and verify playback and memory behavior. If an installation record already exists, run its corresponding uninstall first.
+
+## Uninstall / rollback
+
+Exit Spotify, run `uninstall.ps1` from the release directory, and restart Spotify. It restores backed-up files when hashes still match; it refuses to delete a DLL modified after installation. **If installed manually, remove only the custom DLL you installed, never Windows' System32 DLL.**
+
+## Configuration
+
+`settings.ini` is alongside the DLL. Defaults: 30 s trim interval, 5 s startup delay, zero working-set threshold, coordinator enabled, verbose debug output off. Disable cross-process attempts with `EnableCrossProcessTrim=0` if access denied logs are noisy or if you want self-only behavior. Set `EnableDebugLogging=1` to inspect output in DebugView (Capture Win32). Restart Spotify after changing settings.
+
+## Validation checklist
+
+Run an A/B comparison over comparable Spotify usage (same playback/idle conditions), before and after installation. Record total working set, private commit, page faults, CPU usage, UI navigation responsiveness and playback under load. Observe for at least 1–2 hours. Do not interpret working-set reductions as equivalent to freed application allocations.
+
+## Compatibility and cautions
+
+- Windows x64 only; application-local DLL loading is not guaranteed on other Spotify versions.
+- Third-party, unofficial modification; a Spotify update could break loading, and replacing app-local DLLs could disrupt Spotify.
+- This release does not bypass sandbox permissions or guarantee seven-process coverage.
+- Source is provided for inspection; no binaries are bundled in the source ZIP.
+
+## License
+
+MIT — see LICENSE. This project's code is separate from the third-party Discord fix discussed during development.
