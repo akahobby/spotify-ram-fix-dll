@@ -1,27 +1,28 @@
-# Spotify RAM Fix v0.7 — minimal DLL initialization probe
+# Spotify RAM Fix v0.8 — per-process working-set trim test
 
-**Test-only. Does not reduce RAM.** No workers, mutexes, trimming, filesystem writes or user configuration.
+**Experimental, unverified on Windows.** Builds an x64 `version.dll` proxy using the v0.7 forwarding/export architecture. It creates one worker **in each Spotify process that loads this DLL**. Each worker trims only its own process. It does not hook priority, MMCSS, or raw input, and it does not touch the genuine System32 DLL.
 
-## What it tests
+## Build via GitHub Actions
 
-- `DllMain(DLL_PROCESS_ATTACH)` emits `SpotifyRamFix v0.7: DLL_PROCESS_ATTACH` through `OutputDebugStringW`.
-- If Spotify invokes a Version API export from the proxy, the proxy emits a second `SpotifyRamFix v0.7: version API export called` debug message, and forwards that call to Windows' genuine System32 `version.dll`.
-- Loading the DLL in Procmon alone proves mapping, not that the debug listener captured the message.
+Upload `version_proxy.cpp`, `version.def`, `CMakeLists.txt`, `settings.ini`, and `.github/workflows/build.yml` to the repository at the same paths. Run **Actions → Build Spotify RAM Fix DLL v0.8 → Run workflow**, then download the artifact.
 
-## GitHub Actions build
+## Test
 
-Upload `version_proxy.cpp`, `version.def`, `CMakeLists.txt`, and `.github/workflows/build.yml` to the repository root (creating `.github/workflows/build.yml` through the GitHub web editor if hidden locally). In Actions, run **Build Spotify DLL Probe v0.7** and download the artifact.
+1. Stop the old standalone optimizer and fully exit Spotify (including tray and its subprocesses).
+2. Backup/remove any previous *custom* `%APPDATA%\Spotify\version.dll`. **Never touch** `%WINDIR%\System32\version.dll`.
+3. Place the new `version.dll` and `settings.ini` beside `%APPDATA%\Spotify\Spotify.exe` (website-install build only).
+4. Open DebugView as administrator; enable **Capture → Capture Win32**. Clear capture and restart Spotify.
+5. Filter for `SpotifyRamFix v0.8` and look for `DLL_PROCESS_ATTACH`, `worker_started`, `trim_enabled`, and `trim ... success=1` (or `..._failed`). The first trim occurs around 5 seconds after the DLL loads and repeats every 30 seconds.
+6. Test music, browsing, and game load for glitches. Expect only DLL-loading Spotify processes to be affected.
 
-## Test safely
+### Settings
 
-1. Fully exit Spotify and any old memory optimizer EXE.
-2. Back up/remove the older custom `%APPDATA%\Spotify\version.dll`. **Never replace System32's version.dll.**
-3. Put the new probe `version.dll` next to `%APPDATA%\Spotify\Spotify.exe`.
-4. Start **DebugView as Administrator**; enable Capture > Capture Win32; clear the view and relaunch Spotify.
-5. Search for `SpotifyRamFix v0.7` in DebugView; also use Procmon to verify `Load Image` of the exact AppData DLL path.
-6. For comparison, look for an application-local Load Image event in **Procmon** if DebugView captures nothing. Sandboxed Spotify subprocesses may not send visible debug output.
-7. After testing, exit Spotify and remove this **test** DLL. If Spotify fails to launch, immediately remove the probe DLL.
+`EnableTrim=1` enables trimming; `EnableTrim=0` leaves the worker inactive after startup logging. `TrimIntervalMs=30000` is the interval in milliseconds (clamped to 5000–3600000). Settings are read at startup; restart Spotify after changes.
 
-This probe deliberately does not create log files, because prior versions had silent file-write failures and this is a minimal loader/init test. If debug output remains absent despite verified loading, use an external debugger/ETW instead of assuming initialization did not run.
+### Limits and diagnostics
 
-**Note:** The DLL export-forwarding implementation preserves the v0.6 signatures but has not been verified in a Windows build or tested in Spotify. Treat this as experimental.
+This intentionally uses `OutputDebugStringW` rather than file logging. Some low-integrity subprocess messages can be filtered or suppressed. `EmptyWorkingSet()` reduces the **resident working set**, not necessarily private committed bytes or actual application memory needs. Trimming can increase page faults and degrade responsiveness. Logging displays process ID, working set before/after, private committed bytes, success and Win32 error code.
+
+Thread creation happens in `DllMain` but the worker performs no work until the loader lock is released; the DLL never waits inside `DllMain`. This is a compatibility experiment, not proof that this is a generally safe production initialization pattern. Remove the custom DLL if Spotify becomes unstable.
+
+Note: Some Spotify subprocesses load the genuine Windows `version.dll`, so this DLL may not trim all processes. Avoid calling this a full seven-process replacement until measured.
