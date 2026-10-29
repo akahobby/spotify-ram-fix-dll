@@ -20,168 +20,110 @@ template<typename Fn> Fn GetVersionProc(const char* name) {
 }
 
 namespace {
-struct Settings {
-    bool enabled = true;
-    DWORD intervalMs = 30000;
-    bool logCsv = true;
-};
+HMODULE g_module = nullptr;
+struct Settings { bool enabled = true; DWORD intervalMs = 30000; bool logCsv = true; };
 
-std::wstring appPath(const wchar_t* filename) {
-    wchar_t path[MAX_PATH]{};
-    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
-    if (!n || n >= MAX_PATH) return filename;
-    std::wstring result(path);
-    const auto slash = result.find_last_of(L"\\/");
-    return (slash == std::wstring::npos ? std::wstring{} : result.substr(0, slash + 1)) + filename;
+std::wstring moduleDir() {
+    wchar_t path[32768]{};
+    DWORD n = GetModuleFileNameW(g_module, path, 32768);
+    if (!n || n >= 32768) return L"";
+    std::wstring result(path, n);
+    auto i = result.find_last_of(L"\\/");
+    return i == std::wstring::npos ? L"" : result.substr(0, i + 1);
 }
-// Spotify utility processes can be Low integrity. %LOCALAPPDATA%\Low is
-// normally low-integrity writable; log there first, then try LOCALAPPDATA.
-std::wstring logDirectory() {
-    wchar_t base[MAX_PATH]{};
-    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH);
-    if (!n || n >= MAX_PATH) return L"";
-    std::wstring low = std::wstring(base) + L"\\Low";
-    if (GetFileAttributesW(low.c_str()) != INVALID_FILE_ATTRIBUTES) return low;
-    return std::wstring(base);
+std::wstring logDir() {
+    // Spotify sandboxed utility processes may be low-integrity. LocalLow is
+    // the usual writable directory for them, not Local\\Low.
+    wchar_t base[32768]{};
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", base, 32768);
+    if (!n || n >= 32768) return L"";
+    return std::wstring(base) + L"\\AppData\\LocalLow\\SpotifyRamFix";
 }
-std::wstring logPath(const wchar_t* suffix) {
-    std::wstring base = logDirectory();
-    return base.empty() ? L"" : base + L"\\SpotifyRamFix-" + suffix;
-}
-void appendText(const std::wstring& path, const std::string& msg) {
-    if (path.empty()) return;
-    HANDLE f = CreateFileW(path.c_str(), FILE_APPEND_DATA,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return;
-    DWORD n = 0;
-    WriteFile(f, msg.data(), static_cast<DWORD>(msg.size()), &n, nullptr);
-    CloseHandle(f);
-}
-std::string now();
-void diagnostic(const char* message, DWORD error=0) {
-    appendText(logPath(L"diagnostic.log"), now() + " pid=" +
-        std::to_string(GetCurrentProcessId()) + " " + message +
-        " error=" + std::to_string(error) + "\r\n");
-}
-Settings loadSettings(const std::wstring& config) {
-    Settings s;
-    s.enabled = GetPrivateProfileIntW(L"Settings", L"EnableTrim", 1, config.c_str()) != 0;
-    int i = GetPrivateProfileIntW(L"Settings", L"TrimIntervalMs", 30000, config.c_str());
-    s.intervalMs = static_cast<DWORD>(i < 5000 ? 5000 : (i > 3600000 ? 3600000 : i));
-    s.logCsv = GetPrivateProfileIntW(L"Settings", L"LogCsv", 1, config.c_str()) != 0;
-    return s;
-}
-std::vector<DWORD> spotifyPids() {
-    std::vector<DWORD> pids;
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return pids;
-    PROCESSENTRY32W pe{};
-    pe.dwSize = sizeof(pe);
-    if (Process32FirstW(snap, &pe)) {
-        do {
-            if (_wcsicmp(pe.szExeFile, L"Spotify.exe") == 0)
-                pids.push_back(pe.th32ProcessID);
-        } while (Process32NextW(snap, &pe));
-    }
-    CloseHandle(snap);
-    return pids;
-}
-SIZE_T workingSet(HANDLE process) {
-    PROCESS_MEMORY_COUNTERS pmc{};
-    pmc.cb = sizeof(pmc);
-    return GetProcessMemoryInfo(process, &pmc, sizeof(pmc)) ? pmc.WorkingSetSize : 0;
-}
-void writeRows(const std::string& rows) {
-    const auto path = logPath(L"memory-log.csv");
-    if (path.empty()) return;
-    HANDLE f = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return;
-    LARGE_INTEGER size{};
-    if (GetFileSizeEx(f, &size) && size.QuadPart == 0) {
-        static constexpr char header[] = "timestamp,pid,before_bytes,after_bytes,trim_succeeded,win32_error,worker_pid\r\n";
-        DWORD written = 0;
-        WriteFile(f, header, sizeof(header) - 1, &written, nullptr);
-    }
-    DWORD written = 0;
-    WriteFile(f, rows.data(), static_cast<DWORD>(rows.size()), &written, nullptr);
-    CloseHandle(f);
-}
-std::string now() {
-    SYSTEMTIME t{};
-    GetLocalTime(&t);
+std::string timestamp() {
+    SYSTEMTIME t{}; GetLocalTime(&t);
     char buf[64]{};
     StringCchPrintfA(buf, 64, "%04u-%02u-%02u %02u:%02u:%02u",
         t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);
     return buf;
 }
-
+std::wstring logFile(const wchar_t* filename) {
+    auto dir = logDir();
+    if (dir.empty()) return L"";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\" + filename;
+}
+bool appendText(const std::wstring& path, const std::string& message) {
+    if (path.empty()) return false;
+    HANDLE f = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    BOOL ok = WriteFile(f, message.data(), static_cast<DWORD>(message.size()), &written, nullptr);
+    CloseHandle(f);
+    return ok && written == message.size();
+}
+void diag(const char* text, DWORD error = 0) {
+    std::string line = timestamp() + " pid=" + std::to_string(GetCurrentProcessId()) +
+                       " " + text + " error=" + std::to_string(error) + "\r\n";
+    if (!appendText(logFile(L"diagnostic.log"), line)) {
+        std::wstring debug = L"SpotifyRamFix logging failed: ";
+        debug += std::wstring(line.begin(), line.end());
+        OutputDebugStringW(debug.c_str());
+    }
+}
+Settings loadSettings() {
+    Settings s;
+    std::wstring config = moduleDir() + L"settings.ini";
+    s.enabled = GetPrivateProfileIntW(L"Settings", L"EnableTrim", 1, config.c_str()) != 0;
+    int interval = GetPrivateProfileIntW(L"Settings", L"TrimIntervalMs", 30000, config.c_str());
+    s.intervalMs = static_cast<DWORD>(interval < 5000 ? 5000 : interval > 3600000 ? 3600000 : interval);
+    s.logCsv = GetPrivateProfileIntW(L"Settings", L"LogCsv", 1, config.c_str()) != 0;
+    return s;
+}
+SIZE_T residentBytes() {
+    PROCESS_MEMORY_COUNTERS_EX info{};
+    info.cb = sizeof(info);
+    return GetProcessMemoryInfo(GetCurrentProcess(),
+        reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&info), sizeof(info)) ? info.WorkingSetSize : 0;
+}
+void appendCsv(SIZE_T before, SIZE_T after, bool ok, DWORD error) {
+    std::string row = timestamp() + "," + std::to_string(GetCurrentProcessId()) +
+        "," + std::to_string(before) + "," + std::to_string(after) +
+        "," + std::to_string(ok ? 1 : 0) + "," + std::to_string(error) + "\r\n";
+    const auto path = logFile(L"memory-log.csv");
+    if (!appendText(path, row)) diag("csv_write_failed", GetLastError());
+}
 DWORD WINAPI TrimWorker(void*) {
-    diagnostic("worker_started");
-    // Only one loaded instance may enumerate/trim the Spotify process tree per session.
-    HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\SpotifyRamFix_v04_TrimWorker");
-    if (!mutex) { diagnostic("mutex_create_failed", GetLastError()); return 0; }
-    const DWORD acquired = WaitForSingleObject(mutex, 0);
-    if (acquired != WAIT_OBJECT_0 && acquired != WAIT_ABANDONED) {
-        diagnostic(acquired == WAIT_TIMEOUT ? "mutex_already_owned" : "mutex_wait_failed",
-                   acquired == WAIT_FAILED ? GetLastError() : acquired);
-        CloseHandle(mutex);
-        return 0;
-    }
-    diagnostic("mutex_acquired");
-    const auto config = appPath(L"settings.ini");
-    while (true) {
-        const Settings opts = loadSettings(config);
-        const auto pids = spotifyPids();
-        diagnostic("trim_cycle_begin");
-        std::string rows;
-        if (opts.logCsv) {
-            for (DWORD pid : pids) {
-                HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, FALSE, pid);
-                SIZE_T before = 0, after = 0;
-                BOOL ok = FALSE;
-                DWORD err = 0;
-                if (!process) {
-                    err = GetLastError();
-                } else {
-                    before = workingSet(process);
-                    if (opts.enabled) {
-                        ok = EmptyWorkingSet(process);
-                        if (!ok) err = GetLastError();
-                    } else {
-                        ok = TRUE; // monitor-only
-                    }
-                    after = workingSet(process);
-                    CloseHandle(process);
-                }
-                rows += now() + "," + std::to_string(pid) + "," +
-                        std::to_string(before) + "," + std::to_string(after) + "," +
-                        std::to_string(ok ? 1 : 0) + "," + std::to_string(err) + "," +
-                        std::to_string(GetCurrentProcessId()) + "\r\n";
-            }
-            if (pids.empty()) rows = now() + ",0,0,0,0,0," + std::to_string(GetCurrentProcessId()) + "\r\n";
-            writeRows(rows);
-            diagnostic("trim_cycle_logged");
-        } else if (opts.enabled) {
-            for (DWORD pid : pids) {
-                HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, FALSE, pid);
-                if (process) { EmptyWorkingSet(process); CloseHandle(process); }
-            }
+    diag("worker_started");
+    // Each instance manages only its own Spotify process, so low-integrity
+    // children never need to open higher-integrity siblings.
+    for (;;) {
+        const Settings options = loadSettings();
+        const SIZE_T before = residentBytes();
+        BOOL ok = TRUE;
+        DWORD error = 0;
+        if (options.enabled) {
+            ok = EmptyWorkingSet(GetCurrentProcess());
+            if (!ok) error = GetLastError();
         }
-        Sleep(opts.intervalMs);
+        const SIZE_T after = residentBytes();
+        if (options.logCsv) appendCsv(before, after, !!ok, error);
+        if (!ok) diag("trim_failed", error);
+        Sleep(options.intervalMs);
     }
-    // The host process terminates the thread; keep the mutex owned during its lifetime.
 }
 } // namespace
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
+        g_module = instance;
         DisableThreadLibraryCalls(instance);
-        HANDLE worker = CreateThread(nullptr, 0, TrimWorker, nullptr, 0, nullptr);
-        // Avoid file I/O under the loader lock. The worker logs initialization.
-        if (worker) CloseHandle(worker);
-        else OutputDebugStringW(L"SpotifyRamFix: CreateThread failed in DllMain\n");
+        // Worker handles all I/O only once the loader has released its lock.
+        // No waiting or file operations occur inside DllMain.
+        HANDLE thread = CreateThread(nullptr, 0, TrimWorker, nullptr, 0, nullptr);
+        if (thread) CloseHandle(thread);
+        else OutputDebugStringW(L"SpotifyRamFix: worker CreateThread failed.\n");
     }
     return TRUE;
 }
