@@ -1,4 +1,4 @@
-name: Build Spotify RAM Fix DLL v0.9.3
+name: Build Spotify RAM Fix v1.0
 on:
   workflow_dispatch:
   push:
@@ -12,10 +12,22 @@ jobs:
         run: cmake -S . -B build -A x64
       - name: Build
         run: cmake --build build --config Release
-      - name: Upload DLL and config
+      - name: Check exports
+        shell: pwsh
+        run: |
+          $dumpbin = (Get-ChildItem 'C:\Program Files\Microsoft Visual Studio2\Enterprise\VC\Tools\MSVC\*in\Hostx64d\dumpbin.exe' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          if ($dumpbin) { & $dumpbin /exports build/Release/version.dll }
+          if (!(Test-Path build/Release/version.dll)) { throw 'DLL not built' }
+      - name: Prepare release bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          Copy-Item build/Release/version.dll release/version.dll
+          Copy-Item settings.ini, install.ps1, uninstall.ps1, README.md, LICENSE release/
+          Compress-Archive -Path release/* -DestinationPath SpotifyRamFix-v1.0-Windows-x64.zip -Force
+      - name: Upload Windows release ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: SpotifyRamFix-v0.9.3-x64
-          path: |
-            build/Release/version.dll
-            settings.ini
+          name: SpotifyRamFix-v1.0-Windows-x64
+          path: SpotifyRamFix-v1.0-Windows-x64.zip
+          if-no-files-found: error
